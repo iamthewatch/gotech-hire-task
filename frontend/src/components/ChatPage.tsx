@@ -10,14 +10,6 @@ interface Room {
   description?: string;
 }
 
-interface Message {
-  id: number;
-  content: string;
-  username: string;
-  senderName: string;
-  createdAt: string;
-}
-
 interface Props {
   token: string;
   userId: number;
@@ -38,48 +30,41 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
   const [isConnected, setIsConnected] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
 
-  // FLAW: hardcoded URL (occurrence 4 of 4) - should use apiUrl prop
-  const HARDCODED_API = 'http://localhost:3000';
-
   useEffect(() => {
     fetchRooms();
     fetchCurrentUser();
 
-    socket.on('connect', () => {
-      setIsConnected(true);
-    });
+    const onConnect = () => setIsConnected(true);
+    const onDisconnect = () => setIsConnected(false);
+    const onNewMessage = (message: any) => {
+      setMessages((prev) => {
+        // only append if it belongs to the current room (or if we can't tell, just append)
+        if (selectedRoom && message?.room_id && message.room_id !== selectedRoom.id) return prev;
+        return [...prev, message];
+      });
+    };
 
-    socket.on('disconnect', () => {
-      setIsConnected(false);
-    });
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('newMessage', onNewMessage);
 
-    // FLAW: on every WS message, re-fetches ALL messages via REST instead of just appending
-    socket.on('newMessage', (message: any) => {
-      console.log('New message received:', message);
-      // should just be: setMessages(prev => [...prev, message]);
-      if (selectedRoom) {
-        fetchMessages(selectedRoom.id); // re-fetches everything!
-      }
-    });
-
-    // FLAW: no socket.off() cleanup - causes memory leaks and duplicate handlers
-    // return () => { socket.off('newMessage'); socket.off('connect'); socket.off('disconnect'); };
-  }, []); // FLAW: missing deps [selectedRoom] - stale closure
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('newMessage', onNewMessage);
+    };
+  }, [socket, selectedRoom, token, userId, apiUrl]);
 
   const fetchCurrentUser = async () => {
-    // fetches all users just to find current user's username - very inefficient
-    const res = await fetch(`${HARDCODED_API}/users`, {
+    const res = await fetch(`${apiUrl}/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const users = await res.json();
-    const currentUser = users.find((u: any) => u.id === userId);
-    if (currentUser) {
-      setUsername(currentUser.username);
-    }
+    const me = await res.json();
+    if (me?.username) setUsername(me.username);
   };
 
   const fetchRooms = async () => {
-    const res = await fetch(`${HARDCODED_API}/chat/rooms`, {
+    const res = await fetch(`${apiUrl}/chat/rooms`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = await res.json();
@@ -88,7 +73,7 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
 
   const fetchMessages = async (roomId: number) => {
     setLoadingMessages(true);
-    const res = await fetch(`${HARDCODED_API}/chat/rooms/${roomId}/messages`, {
+    const res = await fetch(`${apiUrl}/chat/rooms/${roomId}/messages?limit=100&offset=0`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = await res.json();
@@ -121,7 +106,7 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
   const handleCreateRoom = async () => {
     if (!newRoomName.trim()) return;
 
-    await fetch(`${HARDCODED_API}/chat/rooms`, {
+    await fetch(`${apiUrl}/chat/rooms`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -210,9 +195,6 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
           rooms={rooms}
           selectedRoom={selectedRoom}
           onSelectRoom={handleRoomSelect}
-          token={token}
-          socket={socket}
-          apiUrl={apiUrl}
         />
       </div>
 
@@ -231,12 +213,9 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
                 messages.map((msg, index) => (
                   // FLAW: using array index as key
                   <MessageItem
-                    key={index}
+                    key={msg.id ?? index}
                     message={msg}
                     isOwn={msg.user_id === userId}
-                    token={token}
-                    socket={socket}
-                    apiUrl={apiUrl}
                   />
                 ))
               )}

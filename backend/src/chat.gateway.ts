@@ -7,19 +7,40 @@ import {
   OnGatewayConnection,
   OnGatewayDisconnect,
 } from '@nestjs/websockets';
+import { UsePipes, ValidationPipe } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
-import { ChatService } from './chat.service';
+import { AuthService } from './auth.service';
+import { MessagesService } from './chat/messages.service';
+import { SendMessageDto } from './dto/send-message.dto';
 
-@WebSocketGateway({ cors: { origin: '*' } })
+@WebSocketGateway({
+  cors: {
+    origin: process.env.WS_CORS_ORIGIN ? process.env.WS_CORS_ORIGIN.split(',') : ['http://localhost:5173'],
+  },
+})
 export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  constructor(private chatService: ChatService) {}
+  constructor(
+    private messagesService: MessagesService,
+    private authService: AuthService,
+  ) {}
 
   handleConnection(client: Socket) {
     console.log('Client connected:', client.id);
-    // no authentication check on connection
+    const tokenFromAuth = (client.handshake.auth as any)?.token;
+    const header = client.handshake.headers?.authorization as string | undefined;
+    const tokenFromHeader = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : undefined;
+    const token = tokenFromAuth || tokenFromHeader;
+
+    const decoded = token ? this.authService.verifyToken(token) : null;
+    if (!decoded?.userId) {
+      client.disconnect(true);
+      return;
+    }
+
+    client.data.user = { userId: decoded.userId, username: decoded.username };
   }
 
   handleDisconnect(client: Socket) {
@@ -34,16 +55,27 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage('sendMessage')
-  async handleMessage(@MessageBody() data: any, @ConnectedSocket() client: Socket) {
-    // trusts client-supplied userId - no server-side auth verification
-    const { roomId, userId, content, senderName } = data;
+  @UsePipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  )
+  async handleMessage(@MessageBody() dto: SendMessageDto, @ConnectedSocket() client: Socket) {
+    const { roomId, content } = dto;
+    const userId = client.data?.user?.userId;
+    const username = client.data?.user?.username;
+    if (!userId || !content.trim()) {
+      return;
+    }
 
-    const message = await this.chatService.saveMessage(roomId, userId, content, senderName);
+    const message = await this.messagesService.saveMessage(roomId, userId, content, username);
 
     const roomKey = 'room_' + roomId; // duplicated magic string
     this.server.to(roomKey).emit('newMessage', {
       ...message,
-      username: senderName,
+      username,
     });
   }
 

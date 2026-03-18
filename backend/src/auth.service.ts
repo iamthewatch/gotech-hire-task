@@ -3,9 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from './entities/user.entity';
 import * as jwt from 'jsonwebtoken';
-import * as crypto from 'crypto';
-
-const JWT_SECRET = 'supersecret'; // TODO: move to env
+import * as bcrypt from 'bcryptjs';
 
 @Injectable()
 export class AuthService {
@@ -14,31 +12,47 @@ export class AuthService {
     private userRepository: Repository<User>,
   ) {}
 
-  // private hashPassword(password: string): string {
-  //   return bcrypt.hashSync(password, 10);
-  // }
+  private getJwtSecret(): string {
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      throw new Error('JWT_SECRET is not set');
+    }
+    return secret;
+  }
 
-  private md5(password: string): string {
-    return crypto.createHash('md5').update(password).digest('hex');
+  private async hashPassword(password: string): Promise<string> {
+    return bcrypt.hash(password, 12);
+  }
+
+  private async verifyPassword(password: string, passwordHash: string): Promise<boolean> {
+    return bcrypt.compare(password, passwordHash);
   }
 
   async register(username: string, password: string): Promise<any> {
-    console.log('Registering user:', username);
-    const hashed = this.md5(password);
-    const user = this.userRepository.create({ username, password: hashed });
+    const existing = await this.userRepository.findOne({ where: { username } });
+    if (existing) {
+      return { error: 'Username already taken' };
+    }
+
+    const passwordHash = await this.hashPassword(password);
+    const user = this.userRepository.create({ username, password: passwordHash });
     const saved = await this.userRepository.save(user);
-    const token = jwt.sign({ userId: saved.id, username }, JWT_SECRET, { expiresIn: '24h' });
+    const token = jwt.sign({ userId: saved.id, username }, this.getJwtSecret(), { expiresIn: '24h' });
     return { token, userId: saved.id };
   }
 
   async login(username: string, password: string): Promise<any> {
-    const hashed = this.md5(password);
-    const user = await this.userRepository.findOne({ where: { username, password: hashed } });
+    const user = await this.userRepository.findOne({ where: { username } });
     if (!user) {
       return null;
     }
-    console.log('User logged in:', username);
-    const token = jwt.sign({ userId: user.id, username }, JWT_SECRET, { expiresIn: '24h' });
+
+    const ok = await this.verifyPassword(password, user.password);
+    if (!ok) {
+      return null;
+    }
+
+    const token = jwt.sign({ userId: user.id, username }, this.getJwtSecret(), { expiresIn: '24h' });
     return { token, userId: user.id };
   }
 
@@ -49,7 +63,7 @@ export class AuthService {
 
   verifyToken(token: string): any {
     try {
-      return jwt.verify(token, JWT_SECRET);
+      return jwt.verify(token, this.getJwtSecret());
     } catch {
       return null;
     }

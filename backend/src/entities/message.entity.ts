@@ -1,6 +1,8 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from 'typeorm';
 
 @Entity('messages')
+@Index(['room_id'])
+@Index(['user_id'])
 export class Message {
   @PrimaryGeneratedColumn()
   id: number;
